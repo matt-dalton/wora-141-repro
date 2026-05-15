@@ -1,0 +1,22 @@
+{
+  "name": "wora-141-repro",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Minimal reproduction for morrys/wora#141 — Store.check() returns { status: 'available', fetchTime: null }, causing store-or-network to skip the network forever.",
+  "scripts": {
+    "test": "jest"
+  },
+  "dependencies": {
+    "@wora/cache-persist": "2.2.1",
+    "@wora/relay-offline": "8.0.0",
+    "@wora/relay-store": "8.0.0",
+    "relay-runtime": "20.1.1"
+  },
+  "devDependencies": {
+    "jest": "29.7.0"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testMatch": ["<rootDir>/src/**/*.test.js"]
+  }
+}
