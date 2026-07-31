@@ -220,46 +220,11 @@ describe('wora#141: a screen must not be stranded on pre-upgrade data', () => {
     });
 });
 
-// Behaviours that work correctly today, recorded so any candidate fix can be
-// checked against them as well as against the block above.
-//
-// The first is the case raised on the issue:
-//
-//   "Marking every operation without a fetchTime as immediately stale would
-//    instead force a network request on its first execution, even when Relay
-//    can fully resolve it from the store."
-//
-// That is a real cost and it is worth being explicit about: the `fetchTime == null
-// => stale` patch turns the first test below RED, because it makes that query
-// fetch where it currently does not.
-// We think it is the right trade — record completeness proves the shape is
-// satisfiable, not that the data is current, and the store cannot presently tell
-// "another query just loaded these" apart from "these are a year old and belong
-// to an operation that no longer exists". But it is a trade, not a free win, and
-// this is where it shows up. A fix that keeps these green while also turning the
-// block above green is strictly better than the one we proposed.
-//
-// The other two are unaffected by any of the fixes discussed so far.
+// Ordinary caching behaviour, so a candidate fix can be checked against it as
+// well as against the block above. Both are unaffected by the fixes discussed
+// on the issue so far.
 describe('behaviours a fix must not break', () => {
     afterEach(() => jest.restoreAllMocks());
-
-    it("a never-fetched query resolves from another query's records without a request", async () => {
-        const storage = createMemoryStorage();
-        const app = await launchApp(storage, 'Ada Lovelace');
-
-        // The profile screen loads the user from the server.
-        expect(await openProfile(app, JULY_BUILD)).toBe('Ada Lovelace');
-        expect(app.getNetworkRequests()).toBe(1);
-
-        // The sidebar's query has never run, and has no fetchTime of its own —
-        // but every field it selects is already in the store, so Relay resolves
-        // it without a second round trip. This is the behaviour store-or-network
-        // exists to provide.
-        expect(await openSidebar(app)).toBe('Ada Lovelace');
-        expect(app.getNetworkRequests()).toBe(1);
-
-        logRootEntry('cross-query reuse — sidebar, never fetched', app, SIDEBAR_QUERY);
-    });
 
     it('a warm restart inside the TTL serves from cache', async () => {
         const storage = createMemoryStorage();

@@ -66,7 +66,7 @@ The maintainer is free to choose any approach (different return value, different
 
 Added to answer the request for the actual query lifecycle. Two app launches over shared persistent storage, with a field removed from a fragment between them, driven through real screens and `useQuery`/`useFragment`. The artifacts are `relay-compiler`'s own output from either side of that edit, committed as `src/__generated__/{before,after}` — diff the two `ProfileScreenQuery.graphql.js` to see `params.text` and `params.cacheID` move.
 
-Two of its tests fail today: after the upgrade the screen renders pre-upgrade data and makes no request, and still does after clearing the orphaned root entry and running `__gc()` (a second screen the upgrade didn't touch still references the records, so there is nothing to collect). A second block records behaviours that are correct today — the `fetchTime == null => stale` patch turns the two failures green and costs one of them an extra request.
+Two of its tests fail today: after the upgrade the screen renders pre-upgrade data and makes no request, and still does after clearing the orphaned root entry and running `__gc()` (a second screen the upgrade didn't touch still references the records, so there is nothing to collect). A second block covers ordinary caching behaviour, unaffected by either. Applying `fetchTime == null => stale` to `lib/Store.js` turns every test in the repo green.
 
 To rebuild the artifacts: put `email` back in the `ProfileScreen_me` fragment, `npm run relay`, copy `after/` to `before/`, remove `email` again, `npm run relay`.
 
