@@ -4,19 +4,31 @@
   "private": true,
   "description": "Minimal reproduction for morrys/wora#141 — Store.check() returns { status: 'available', fetchTime: null }, causing store-or-network to skip the network forever.",
   "scripts": {
-    "test": "jest"
+    "test": "jest",
+    "relay": "relay-compiler"
   },
   "dependencies": {
     "@wora/cache-persist": "2.2.1",
     "@wora/relay-offline": "8.0.0",
     "@wora/relay-store": "8.0.0",
+    "react-relay-offline": "7.0.0",
+    "relay-hooks": "10.0.2",
     "relay-runtime": "20.1.1"
   },
   "devDependencies": {
-    "jest": "29.7.0"
+    "@babel/core": "^7.29.7",
+    "@babel/preset-env": "^7.29.7",
+    "babel-plugin-relay": "20.1.1",
+    "graphql": "^16.14.2",
+    "jest": "29.7.0",
+    "react": "^18.3.1",
+    "react-test-renderer": "^18.3.1",
+    "relay-compiler": "20.1.1"
   },
   "jest": {
     "testEnvironment": "node",
-    "testMatch": ["<rootDir>/src/**/*.test.js"]
+    "testMatch": [
+      "<rootDir>/src/**/*.test.js"
+    ]
   }
 }
