@@ -11,7 +11,7 @@ npm install
 npm test
 ```
 
-**On unpatched `@wora/relay-store@8.0.0`, expect 3 passing tests and 1 failing test.** That's the spec — see "What the suite proves" below.
+**On unpatched `@wora/relay-store@8.0.0`, expect 7 passing tests and 3 failing tests.** The failures are the spec — see "What the suite proves" below and `src/integration.test.js`.
 
 ## What the suite proves
 
@@ -62,9 +62,13 @@ We applied this diff to `lib/Store.js` locally via `patch-package` and confirmed
 
 The maintainer is free to choose any approach (different return value, different layer entirely); only the spec test's behavioural contract is the bar to clear.
 
-## What's NOT modelled
+## The real-world flow — `src/integration.test.js`
 
-The reproducer does not simulate the production trigger (an app upgrade that shifts a printed-operation hash). The production state — "operation retained under hash H2 whose records are present in the source from other retained operations / persistence rehydration" — is synthesised directly via `RecordSource.set()` + `environment.retain()`. How production reaches that state is independent and well-documented in the issue.
+Added to answer the request for the actual query lifecycle. Two app launches over shared persistent storage, with a field removed from a fragment between them, driven through real screens and `useQuery`/`useFragment`. The artifacts are `relay-compiler`'s own output from either side of that edit, committed as `src/__generated__/{before,after}` — diff the two `ProfileScreenQuery.graphql.js` to see `params.text` and `params.cacheID` move.
+
+Two of its tests fail today: after the upgrade the screen renders pre-upgrade data and makes no request, and still does after clearing the orphaned root entry and running `__gc()` (a second screen the upgrade didn't touch still references the records, so there is nothing to collect). A second block records behaviours that are correct today — the `fetchTime == null => stale` patch turns the two failures green and costs one of them an extra request.
+
+To rebuild the artifacts: put `email` back in the `ProfileScreen_me` fragment, `npm run relay`, copy `after/` to `before/`, remove `email` again, `npm run relay`.
 
 ## Versions
 
