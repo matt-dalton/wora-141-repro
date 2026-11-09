@@ -11,15 +11,45 @@ npm install
 npm test
 ```
 
-**On unpatched `@wora/relay-store@8.0.0`, expect 7 passing tests and 3 failing tests.** The failures are the spec — see "What the suite proves" below and `src/integration.test.js`.
+`npm install` applies the candidate fix in `patches/@wora+relay-store+8.0.0.patch`, so `npm test` is green (9 passing). To see the bug, take the patch off and run again — expect 3 failing tests:
 
-## What the suite proves
+```sh
+npx patch-package --reverse
+npm test
+```
 
-The tests are split into a demonstration block, a single spec test, and a reference example.
+## The contract
 
-### Demonstration — what `check()` does today _(passes today; spy output is the point)_
+> An operation whose records are in the store but which has no `fetchTime` may be served from the store, but for at most one TTL. After that, `store-or-network` must fetch.
 
-Two tests with no behavioural assertions. They exist to drive a self-narrating spy through the relevant code paths so `npm test` prints the exact scalar inputs and outputs of `getAvailabilityStatus`, line-for-line, for each entry point. Concretely:
+This keeps the reuse that `store-or-network` exists for: a new query resolved from records another query wrote makes no request. It only stops the state from lasting forever.
+
+## The candidate fix — `patches/@wora+relay-store+8.0.0.patch`
+
+Two lines in `Store.ts`:
+
+```diff
+     // check(): fall back to retainTime when the operation was never fetched
+-    rootEntry?.fetchTime,
++    rootEntry?.fetchTime ?? rootEntry?.retainTime,
+
+     // retain() dispose sweep: keep never-fetched roots
+-    if (dispose && expired) {
++    if (dispose && expired && fetchTime != null) {
+```
+
+Both are needed:
+
+- **The fallback alone is not enough.** When Ada leaves her profile, its root entry is disposed. Once its `retainTime` is past the TTL, the next screen that closes removes it in the dispose sweep. Her next visit creates a new root entry with `retainTime = now`, so it is `available` again with no request. This repeats on every visit.
+- **With the sweep change,** the never-fetched root entry stays. Her next visit after the TTL finds it stale and fetches. After that it has a `fetchTime` and the sweep treats it as normal.
+
+Cost: a root entry that is never fetched and never retained again is not swept.
+
+## Tests
+
+### Demonstration — `src/repro.test.js` _(no assertions; the spy output is the point)_
+
+Prints the inputs and output of `getAvailabilityStatus` for the bug state:
 
 ```
 [wora#141] getAvailabilityStatus called with:
@@ -31,42 +61,19 @@ Two tests with no behavioural assertions. They exist to drive a self-narrating s
 [wora#141] returned: { status: 'available', fetchTime: null }
 ```
 
-Compare against your own production diagnostic to verify we're describing the same state. After a fix, these tests will continue to pass (no assertions to break) but the spy output will naturally shift to reflect the new behaviour — itself useful evidence that the surface changed.
+The spy does not modify wora. It reads the same fields `Store.prototype.check` reads.
 
-**The spy does not modify wora.** `node_modules/@wora/relay-store/` is byte-for-byte unmodified. The instrumentation is per-store-instance, lives in `src/repro.test.js`, and reads the same fields `Store.prototype.check` reads (`rootEntry.epoch`, `rootEntry.fetchTime`, `getTTL`, `checkGC`) plus a re-run of `DataChecker.check` to obtain `operationAvailability`. Each logged value is the literal value flowing into wora's own `getAvailabilityStatus`.
+### Spec — B1 in `src/repro.test.js`
 
-### Spec — required behaviour _(fails today; must pass after any valid fix)_
+The contract above, with `fetchQuery` directly: records in the source, no `fetchTime`. The first call may come from the store; a call after the TTL must reach the network.
 
-A single test asserting the user-visible contract:
+### The real-world flow — `src/integration.test.js`
 
-> Given a `Store` with records in the source but no `fetchTime` for an operation, `fetchQuery(..., { fetchPolicy: 'store-or-network' })` must fire the network at least once.
+Two app launches over shared persistent storage, with a field removed from a fragment between them, through real screens and `useQuery`/`useFragment`. The artifacts are `relay-compiler`'s own output from either side of that edit, committed as `src/__generated__/{before,after}`. Diff the two `ProfileScreenQuery.graphql.js` to see `params.text` and `params.cacheID` move.
 
-This is deliberately fix-agnostic. It does **not** prescribe what `getAvailabilityStatus` should return, what layer the fix should live in, or whether a different mechanism (e.g. teaching `mergeState` to skip null-`fetchTime` entries; reworking `retain()` to never create them; changing the contract elsewhere) is preferable. **If this test passes, the user is no longer permanently stuck on cached data — by any mechanism.**
+After the upgrade, Ada opens her profile (cached name is acceptable), leaves it, uses the app for six minutes, and comes back. Unpatched, she still sees the pre-upgrade name with no request, on every visit. This also holds after clearing the orphaned root entry and running `__gc()`: a second screen the upgrade didn't touch still references the records, so there is nothing to collect.
 
-### Reference — one verified local patch _(illustrative, not prescriptive)_
-
-We applied this diff to `lib/Store.js` locally via `patch-package` and confirmed it satisfies the spec. It is documented in the test file as one example of a fix that works, **NOT as a prescription**.
-
-```diff
-   if (operationFetchTime != null && queryCacheExpirationTime != null) {
-       var isStale = operationFetchTime <= Date.now() - queryCacheExpirationTime;
-       if (isStale && staleForExpiration) {
-           return { status: 'stale' };
-       }
-   }
-+  if (operationFetchTime == null) {
-+      return { status: 'stale' };
-+  }
-   return { status: 'available', fetchTime: operationFetchTime ?? null };
-```
-
-The maintainer is free to choose any approach (different return value, different layer entirely); only the spec test's behavioural contract is the bar to clear.
-
-## The real-world flow — `src/integration.test.js`
-
-Added to answer the request for the actual query lifecycle. Two app launches over shared persistent storage, with a field removed from a fragment between them, driven through real screens and `useQuery`/`useFragment`. The artifacts are `relay-compiler`'s own output from either side of that edit, committed as `src/__generated__/{before,after}` — diff the two `ProfileScreenQuery.graphql.js` to see `params.text` and `params.cacheID` move.
-
-Two of its tests fail today: after the upgrade the screen renders pre-upgrade data and makes no request, and still does after clearing the orphaned root entry and running `__gc()` (a second screen the upgrade didn't touch still references the records, so there is nothing to collect). A second block covers ordinary caching behaviour, unaffected by either. Applying `fetchTime == null => stale` to `lib/Store.js` turns every test in the repo green.
+A second block covers ordinary caching, which the fix must not break: warm restart inside the TTL, restart after the TTL, and a new query served from another query's records with no request.
 
 To rebuild the artifacts: put `email` back in the `ProfileScreen_me` fragment, `npm run relay`, copy `after/` to `before/`, remove `email` again, `npm run relay`.
 

@@ -185,7 +185,9 @@ describe('Demonstration — what check() does today (spy output is the point)', 
 // ===========================================================================
 
 describe('Block B — required behaviour (fails today; must pass after any valid fix)', () => {
-    test('B1: fetchQuery with store-or-network must fire the network at least once when no fetchTime has ever been recorded', async () => {
+    afterEach(() => jest.restoreAllMocks());
+
+    test('B1: fetchQuery with store-or-network must fire the network once the TTL has passed, even when no fetchTime has ever been recorded', async () => {
         let networkCalls = 0;
         const { environment, store } = buildEnvironment(() => {
             networkCalls += 1;
@@ -197,80 +199,20 @@ describe('Block B — required behaviour (fails today; must pass after any valid
         const operation = createOperationDescriptor(getRequest(QueryNode), {});
         environment.retain(operation);
 
-        await fetchQuery(environment, QueryNode, {}, {
-            fetchPolicy: 'store-or-network',
-        }).toPromise();
+        // Inside the TTL, serving the cached records is acceptable.
+        await fetchQuery(environment, QueryNode, {}, { fetchPolicy: 'store-or-network' }).toPromise();
 
-        // The contract: with no recorded fetchTime, the consumer cannot rely
-        // on the cached records being current. The network must be consulted
-        // at least once so notify() can land a real fetchTime and the state
-        // can self-heal on subsequent calls.
+        const later = Date.now() + TTL_48H + 1;
+        jest.spyOn(Date, 'now').mockReturnValue(later);
+
+        await fetchQuery(environment, QueryNode, {}, { fetchPolicy: 'store-or-network' }).toPromise();
+
+        // The contract: with no recorded fetchTime, the records' age is unknown.
+        // They may be reused for one TTL, after which the network must be
+        // consulted so notify() can land a real fetchTime.
         expect(networkCalls).toBeGreaterThanOrEqual(1);
     });
 });
 
-// ===========================================================================
-// Reference — one local workaround we verified (not a prescription)
-// ===========================================================================
-// We applied the diff below to lib/Store.js locally via patch-package and
-// confirmed it satisfies Block B. It is documented here as one example of
-// a fix that works, NOT as a prescription. The maintainer is free to
-// choose any approach (different return value, different layer entirely);
-// only Block B's behavioural contract is the spec.
-//
-//     if (operationFetchTime != null && queryCacheExpirationTime != null) {
-//         var isStale = operationFetchTime <= Date.now() - queryCacheExpirationTime;
-//         if (isStale && staleForExpiration) {
-//             return { status: 'stale' };
-//         }
-//     }
-//   + if (operationFetchTime == null) {
-//   +     return { status: 'stale' };
-//   + }
-//     return { status: 'available', fetchTime: operationFetchTime ?? null };
-// ===========================================================================
-
-function getAvailabilityStatusWithLocalPatch(
-    operationAvailability,
-    operationLastWrittenAt,
-    operationFetchTime,
-    queryCacheExpirationTime,
-    staleForExpiration,
-) {
-    const { mostRecentlyInvalidatedAt, status } = operationAvailability;
-    if (typeof mostRecentlyInvalidatedAt === 'number') {
-        if (operationLastWrittenAt == null || mostRecentlyInvalidatedAt > operationLastWrittenAt) {
-            return { status: 'stale' };
-        }
-    }
-    if (status === 'missing') {
-        return { status: 'missing' };
-    }
-    if (operationFetchTime != null && queryCacheExpirationTime != null) {
-        const isStale = operationFetchTime <= Date.now() - queryCacheExpirationTime;
-        if (isStale && staleForExpiration) {
-            return { status: 'stale' };
-        }
-    }
-    if (operationFetchTime == null) {
-        return { status: 'stale' };
-    }
-    return { status: 'available', fetchTime: operationFetchTime ?? null };
-}
-
-describe('Reference — one verified local patch (illustrative, not prescriptive)', () => {
-    test('the documented diff returns "stale" for the inputs that exhibit the bug', () => {
-        const result = getAvailabilityStatusWithLocalPatch(
-            { status: 'available', mostRecentlyInvalidatedAt: undefined },
-            null,
-            null,
-            TTL_48H,
-            true,
-        );
-        // 'stale' lets the consumer reuse cached records while a refresh
-        // fires. 'missing' would also satisfy Block B (at the cost of
-        // blanking the screen). A fix elsewhere (mergeState, retain, etc.)
-        // would also satisfy Block B without changing this function at all.
-        expect(result).toEqual({ status: 'stale' });
-    });
-});
+// The candidate fix lives in patches/@wora+relay-store+8.0.0.patch and is
+// applied by `npm install`. See the README.

@@ -1,0 +1,22 @@
+diff --git a/node_modules/@wora/relay-store/lib/Store.js b/node_modules/@wora/relay-store/lib/Store.js
+index 4025bae..2d3c8a9 100644
+--- a/node_modules/@wora/relay-store/lib/Store.js
++++ b/node_modules/@wora/relay-store/lib/Store.js
+@@ -78,7 +78,7 @@ var Store = (function (_super) {
+                 var _a = _this._cache.get(idCache), fetchTime = _a.fetchTime, retainTime = _a.retainTime, ttl = _a.ttl, dispose = _a.dispose;
+                 var checkDate = fetchTime != null ? fetchTime : retainTime;
+                 var expired = !_this.isCurrent(checkDate, ttl);
+-                if (dispose && expired) {
++                if (dispose && expired && fetchTime != null) {
+                     toSchedule = true;
+                     _this._cache.remove(idCache);
+                 }
+@@ -138,7 +138,7 @@ var Store = (function (_super) {
+         });
+         var handlers = (_h = options === null || options === void 0 ? void 0 : options.handlers) !== null && _h !== void 0 ? _h : [];
+         var operationAvailability = DataChecker.check(getSourceForActor, getTargetForActor, (_k = (_j = options) === null || _j === void 0 ? void 0 : _j.defaultActorIdentifier) !== null && _k !== void 0 ? _k : INTERNAL_ACTOR_IDENTIFIER_DO_NOT_USE, selector, handlers, this._operationLoader, this._getDataID, this._shouldProcessClientComponents, this.__log, useExecTimeResolvers);
+-        return getAvailabilityStatus(operationAvailability, operationLastWrittenAt, rootEntry === null || rootEntry === void 0 ? void 0 : rootEntry.fetchTime, this.getTTL(operation), this.checkGC());
++        return getAvailabilityStatus(operationAvailability, operationLastWrittenAt, rootEntry == null ? void 0 : (rootEntry.fetchTime != null ? rootEntry.fetchTime : rootEntry.retainTime), this.getTTL(operation), this.checkGC());
+     };
+     Store.prototype.notify = function (sourceOperation, invalidateStore) {
+         var updateRoot = sourceOperation && this._cache.has(sourceOperation.request.identifier);

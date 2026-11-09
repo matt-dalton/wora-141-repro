@@ -47,6 +47,7 @@ const JULY_BUILD = {
 const SIDEBAR_QUERY = require('./__generated__/after/SidebarQuery.graphql');
 
 const FIVE_MINUTES = 5 * 60 * 1000;
+const SIX_MINUTES = 6 * 60 * 1000;
 const FORTY_EIGHT_HOURS = 48 * 60 * 60 * 1000;
 const ONE_DAY = 24 * 60 * 60 * 1000;
 
@@ -102,6 +103,31 @@ const openProfile = (app, build, options = FIVE_MINUTE_TTL) =>
 const openSidebar = (app) =>
     mountScreen(app, React.createElement(Sidebar, { query: SIDEBAR_QUERY, options: STORE_DEFAULT_TTL }));
 
+const profileScreen = (build) => React.createElement(ProfileScreen, { build, options: FIVE_MINUTE_TTL });
+
+// Like mountScreen, but hands back the renderer so the test can leave the screen.
+async function mountAndKeep(app, element) {
+    let renderer;
+
+    await act(async () => {
+        renderer = create(
+            React.createElement(RelayEnvironmentProvider, { environment: app.environment }, element),
+        );
+    });
+
+    return renderer;
+}
+
+// Any screen closing releases its query, which runs wora's sweep of disposed,
+// expired root entries.
+async function openAndCloseAnotherScreen(app) {
+    const sidebar = await mountAndKeep(
+        app,
+        React.createElement(Sidebar, { query: SIDEBAR_QUERY, options: STORE_DEFAULT_TTL }),
+    );
+    await act(async () => sidebar.unmount());
+}
+
 // ---------------------------------------------------------------------------
 // The only two helpers that look inside wora. `store._cache` is its root-entry
 // map — the thing `Store.check()` consults to answer "do I have this query, and
@@ -131,6 +157,10 @@ function logRootEntry(label, app, query) {
 // Every test below states how the app is supposed to behave. Two of them fail on
 // unpatched @wora/relay-store@8.0.0 — those failures are the bug report. A fix
 // should turn them green without turning anything else red.
+//
+// The bar is "stale for at most one TTL", not "fetch on first open": a query whose
+// records are already in the store may be served from them, as long as it is
+// refreshed once its TTL has passed.
 describe('wora#141: a screen must not be stranded on pre-upgrade data', () => {
     afterEach(() => jest.restoreAllMocks());
 
@@ -148,75 +178,80 @@ describe('wora#141: a screen must not be stranded on pre-upgrade data', () => {
         await saveToDisk(app);
     }
 
-    // July. Ada reopens the app a day later, so the 5-minute TTL on the profile
-    // screen is long gone and nothing below has a freshness excuse. Meanwhile the
-    // backend now says her name is Grace Hopper.
-    async function reopenTheAppTomorrow(storage, build, label) {
-        jest.spyOn(Date, 'now').mockReturnValue(Date.now() + ONE_DAY);
+    // July. Ada reopens the app a day later. Meanwhile the backend now says her
+    // name is Grace Hopper. Returns a clock so the session can move on.
+    async function reopenTheAppTomorrow(storage) {
+        let now = Date.now() + ONE_DAY;
+        jest.spyOn(Date, 'now').mockImplementation(() => now);
 
         const app = await launchApp(storage, 'Grace Hopper');
 
         // The sidebar opens first, as it would — and holds the shared records.
         await openSidebar(app);
-        const name = await openProfile(app, build);
-
-        logRootEntry(label, app, build.query);
-        return { app, name, networkRequests: app.getNetworkRequests() };
+        return { app, advanceClock: (ms) => { now += ms; } };
     }
 
-    // FAILS on unpatched wora: renders 'Ada Lovelace', 0 requests.
-    it('shows the current name after an upgrade changes the query fragment', async () => {
+    // Ada opens the upgraded profile, leaves it, and keeps using the app past the
+    // TTL: another screen closes, then she comes back to her profile.
+    async function revisitProfileAfterTheTtl(app, advanceClock) {
+        const firstVisit = await mountAndKeep(app, profileScreen(JULY_BUILD));
+        const firstVisitName = firstVisit.toJSON();
+        await act(async () => firstVisit.unmount());
+
+        advanceClock(SIX_MINUTES);
+        await openAndCloseAnotherScreen(app);
+
+        const name = await openProfile(app, JULY_BUILD);
+        logRootEntry('session 2 — upgraded build, profile revisited after the TTL', app, JULY_BUILD.query);
+        return { firstVisitName, name };
+    }
+
+    // FAILS on unpatched wora: renders 'Ada Lovelace', 0 requests, on every visit.
+    it('shows the current name once the TTL has passed after an upgrade changes the query fragment', async () => {
         const storage = createMemoryStorage();
         await firstLaunchOnTheOldBuild(storage);
 
-        // The upgrade: the profile screen now runs the July artifacts.
-        const { name, networkRequests } = await reopenTheAppTomorrow(
-            storage,
-            JULY_BUILD,
-            'session 2 — upgraded build, profile',
-        );
+        const { app, advanceClock } = await reopenTheAppTomorrow(storage);
+        const { firstVisitName, name } = await revisitProfileAfterTheTtl(app, advanceClock);
 
+        // Inside the TTL, serving the cached records is acceptable.
+        expect(firstVisitName).toBe('Ada Lovelace');
         expect(name).toBe('Grace Hopper');
-        expect(networkRequests).toBe(1);
+        expect(app.getNetworkRequests()).toBe(1);
     });
 
     it('control: shows the current name when the upgrade is skipped', async () => {
         const storage = createMemoryStorage();
         await firstLaunchOnTheOldBuild(storage);
 
-        // Identical to the test above in every way except one: no upgrade, so
-        // the profile screen still runs the June artifacts.
-        const { name, networkRequests } = await reopenTheAppTomorrow(
-            storage,
-            JUNE_BUILD,
-            'control — same build, profile',
-        );
+        // No upgrade: the June root entry has a fetchTime from yesterday, so the
+        // first open already refetches.
+        const { app } = await reopenTheAppTomorrow(storage);
 
-        expect(name).toBe('Grace Hopper');
-        expect(networkRequests).toBe(1);
+        expect(await openProfile(app, JUNE_BUILD)).toBe('Grace Hopper');
+        expect(app.getNetworkRequests()).toBe(1);
     });
 
-    // Same requirement, but with the obvious remedy applied first: drop the root
-    // entry for the operation the new build no longer runs, and collect. It does
-    // not help — the sidebar is still open and still references those records, so
-    // there is nothing to collect.
+    // Same requirement, with the obvious remedy applied first: drop the root entry
+    // for the operation the new build no longer runs, and collect. It does not
+    // help — the sidebar still references those records, so there is nothing to
+    // collect.
     //
-    // FAILS on unpatched wora: renders 'Ada Lovelace', 0 requests.
-    it('shows the current name even after clearing the orphaned root entry and collecting', async () => {
+    // FAILS on unpatched wora: renders 'Ada Lovelace', 0 requests, on every visit.
+    it('shows the current name once the TTL has passed, with or without clearing the orphaned root entry', async () => {
         const storage = createMemoryStorage();
         await firstLaunchOnTheOldBuild(storage);
 
-        jest.spyOn(Date, 'now').mockReturnValue(Date.now() + ONE_DAY);
-        const app = await launchApp(storage, 'Grace Hopper');
-        await openSidebar(app);
-
+        const { app, advanceClock } = await reopenTheAppTomorrow(storage);
         await act(async () => {
             app.store._cache.remove(rootEntryKey(JUNE_BUILD.query)); // the pre-upgrade query's root entry
             app.store.__gc();
         });
 
-        expect(await openProfile(app, JULY_BUILD)).toBe('Grace Hopper');
-        expect(app.getNetworkRequests()).toBeGreaterThan(0);
+        const { name } = await revisitProfileAfterTheTtl(app, advanceClock);
+
+        expect(name).toBe('Grace Hopper');
+        expect(app.getNetworkRequests()).toBe(1);
     });
 });
 
@@ -253,5 +288,18 @@ describe('behaviours a fix must not break', () => {
 
         expect(await openProfile(second, JULY_BUILD)).toBe('Grace Hopper');
         expect(second.getNetworkRequests()).toBe(1);
+    });
+
+    // A query whose records another query already wrote may be served from the
+    // store inside its TTL, with no request.
+    it('a new query resolved from records already in the store serves from cache', async () => {
+        const storage = createMemoryStorage();
+
+        const app = await launchApp(storage, 'Ada Lovelace');
+        await openSidebar(app);
+        expect(app.getNetworkRequests()).toBe(1);
+
+        expect(await openProfile(app, JULY_BUILD)).toBe('Ada Lovelace');
+        expect(app.getNetworkRequests()).toBe(1);
     });
 });
